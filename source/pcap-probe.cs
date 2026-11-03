@@ -3,6 +3,8 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 
+[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+
 class PcapProbe {
     [StructLayout(LayoutKind.Sequential)] struct Device {
         public IntPtr next, name, description, addresses;
@@ -23,6 +25,7 @@ class PcapProbe {
     static string Str(IntPtr p) { return p == IntPtr.Zero ? "" : Marshal.PtrToStringAnsi(p); }
     static int Main(string[] args) {
         try {
+            if(IntPtr.Size != 4) throw new Exception("Build this probe with /platform:x86.");
             Console.WriteLine("Process bits: " + (IntPtr.Size * 8));
             Console.WriteLine(Str(pcap_lib_version()));
             var error = new StringBuilder(512);
@@ -48,6 +51,7 @@ class PcapProbe {
             try {
                 Console.WriteLine("Data link type: " + pcap_datalink(h));
                 if(args.Length < 2) return 0;
+                if(pcap_datalink(h) != 1) throw new Exception("Capture requires an Ethernet adapter.");
                 BpfProgram filter;
                 if(pcap_compile(h, out filter, "ether proto 0x88b5", 1, 0xffffffff) != 0) throw new Exception(Str(pcap_geterr(h)));
                 try { if(pcap_setfilter(h, ref filter) != 0) throw new Exception(Str(pcap_geterr(h))); }
@@ -59,11 +63,13 @@ class PcapProbe {
                     var status = pcap_next_ex(h, out ph, out data);
                     if(status == 0) continue;
                     if(status != 1) throw new Exception(Str(pcap_geterr(h)));
+                    if(ph == IntPtr.Zero || data == IntPtr.Zero) throw new Exception("Missing packet buffer.");
                     var captured = Marshal.ReadInt32(ph, 8);
                     if(captured < 14 || captured > 2048) throw new Exception("Unexpected captured length: " + captured);
                     var packet = new byte[captured];
                     Marshal.Copy(data, packet, 0, captured);
-                    File.WriteAllBytes(args[1], packet);
+                    using(var output = new FileStream(args[1], FileMode.CreateNew, FileAccess.Write))
+                        output.Write(packet, 0, packet.Length);
                     Console.WriteLine("Captured test frame: " + captured + " bytes; " + BitConverter.ToString(packet));
                     return 0;
                 }

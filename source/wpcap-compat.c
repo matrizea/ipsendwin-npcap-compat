@@ -3,29 +3,58 @@
  * Calls the installed Npcap by absolute path and moves the first
  * IPv4-capable non-loopback interface to the front of its returned list.
  */
-typedef unsigned long DWORD;
-typedef unsigned short WORD;
-typedef int BOOL;
-typedef void *HANDLE;
-#define WINAPI __attribute__((stdcall))
-#define CDECL __attribute__((cdecl))
-__declspec(dllimport) unsigned int WINAPI GetSystemDirectoryW(WORD *, unsigned int);
-__declspec(dllimport) HANDLE WINAPI LoadLibraryW(const WORD *);
-__declspec(dllimport) void * WINAPI GetProcAddress(HANDLE, const char *);
+#define _WIN32_WINNT 0x0600
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 typedef struct Address { struct Address *next; void *addr, *netmask, *broadaddr, *dstaddr; } Address;
 typedef struct Device { struct Device *next; char *name, *description; Address *addresses; unsigned int flags; } Device;
-static HANDLE library;
-static void *lookup(const char *name) {
-    WORD path[300];
-    static const WORD suffix[] = {'\\','N','p','c','a','p','\\','w','p','c','a','p','.','d','l','l',0};
+typedef struct Api {
+    int (__cdecl *findalldevs)(Device **, char *);
+    void *(__cdecl *open_live)(const char *, int, int, int, char *);
+    int (__cdecl *sendpacket)(void *, const unsigned char *, int);
+    void (__cdecl *close)(void *);
+    const char *(__cdecl *lib_version)(void);
+    void (__cdecl *freealldevs)(Device *);
+} Api;
+static INIT_ONCE initialization = INIT_ONCE_STATIC_INIT;
+static Api api;
+static BOOL WINAPI initialize(PINIT_ONCE once, PVOID parameter, PVOID *context) {
+    WCHAR path[300];
+    static const WCHAR suffix[] = L"\\Npcap\\wpcap.dll";
     unsigned int n, i;
-    if (!library) {
-        n = GetSystemDirectoryW(path, 280);
-        if (!n || n >= 280) return 0;
-        for (i=0; i<sizeof(suffix)/sizeof(suffix[0]); ++i) path[n+i] = suffix[i];
-        library = LoadLibraryW(path);
+    HMODULE library;
+    Api candidate;
+    (void)once; (void)parameter; (void)context;
+    n = GetSystemDirectoryW(path, 280);
+    if (!n || n >= 280) return FALSE;
+    for (i=0; i<sizeof(suffix)/sizeof(suffix[0]); ++i) path[n+i] = suffix[i];
+    library = LoadLibraryExW(path, NULL,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!library) return FALSE;
+    candidate.findalldevs = (int (__cdecl *)(Device **, char *))GetProcAddress(library, "pcap_findalldevs");
+    candidate.open_live = (void *(__cdecl *)(const char *, int, int, int, char *))GetProcAddress(library, "pcap_open_live");
+    candidate.sendpacket = (int (__cdecl *)(void *, const unsigned char *, int))GetProcAddress(library, "pcap_sendpacket");
+    candidate.close = (void (__cdecl *)(void *))GetProcAddress(library, "pcap_close");
+    candidate.lib_version = (const char *(__cdecl *)(void))GetProcAddress(library, "pcap_lib_version");
+    candidate.freealldevs = (void (__cdecl *)(Device *))GetProcAddress(library, "pcap_freealldevs");
+    if (!candidate.findalldevs || !candidate.open_live || !candidate.sendpacket ||
+        !candidate.close || !candidate.lib_version || !candidate.freealldevs) {
+        FreeLibrary(library);
+        SetLastError(ERROR_PROC_NOT_FOUND);
+        return FALSE;
     }
-    return library ? GetProcAddress(library, name) : 0;
+    /* The successful module reference stays loaded for the process lifetime. */
+    api = candidate;
+    return TRUE;
+}
+static const Api *get_api(void) {
+    return InitOnceExecuteOnce(&initialization, initialize, NULL, NULL) ? &api : NULL;
+}
+static void load_error(char *error) {
+    static const char message[] = "Could not load the installed 32-bit Npcap library.";
+    unsigned int i;
+    if (error) for (i=0; i<sizeof(message); ++i) error[i]=message[i];
 }
 static int ipv4(Device *d) {
     Address *a;
@@ -34,42 +63,47 @@ static int ipv4(Device *d) {
         if (a->addr && *(WORD *)a->addr == 2) return 1;
     return 0;
 }
-int CDECL pcap_findalldevs(Device **head, char *error) {
-    typedef int (CDECL *Fn)(Device **, char *);
-    Fn fn=(Fn)lookup("pcap_findalldevs");
+int __cdecl pcap_findalldevs(Device **head, char *error) {
+    const Api *a;
     Device *prev, *d;
     int r;
-    if (!fn) { if (head) *head=0; if(error) error[0]=0; return -1; }
-    r=fn(head,error);
-    if (r || !head || !*head || ipv4(*head)) return r;
+    if (!head) { SetLastError(ERROR_INVALID_PARAMETER); load_error(error); return -1; }
+    *head=0;
+    a=get_api();
+    if (!a) { load_error(error); return -1; }
+    r=a->findalldevs(head,error);
+    if (r || !*head || ipv4(*head)) return r;
     for (prev=*head, d=prev->next; d; prev=d, d=d->next) {
         if(ipv4(d)) { prev->next=d->next; d->next=*head; *head=d; break; }
     }
     return r;
 }
-void * CDECL pcap_open_live(const char *name, int length, int promiscuous, int timeout, char *error) {
-    typedef void *(CDECL *Fn)(const char *, int, int, int, char *);
-    Fn fn=(Fn)lookup("pcap_open_live");
-    return fn ? fn(name,length,promiscuous,timeout,error) : (void *)0;
+void * __cdecl pcap_open_live(const char *name, int length, int promiscuous, int timeout, char *error) {
+    const Api *a=get_api();
+    if (!a) { load_error(error); return NULL; }
+    return a->open_live(name,length,promiscuous,timeout,error);
 }
-int CDECL pcap_sendpacket(void *handle, const unsigned char *data, int size) {
-    typedef int (CDECL *Fn)(void *,const unsigned char *,int);
-    Fn fn=(Fn)lookup("pcap_sendpacket");
-    return fn ? fn(handle,data,size) : -1;
+int __cdecl pcap_sendpacket(void *handle, const unsigned char *data, int size) {
+    const Api *a=get_api();
+    return a ? a->sendpacket(handle,data,size) : -1;
 }
-void CDECL pcap_close(void *handle) {
-    typedef void (CDECL *Fn)(void *);
-    Fn fn=(Fn)lookup("pcap_close");
-    if(fn) fn(handle);
+void __cdecl pcap_close(void *handle) {
+    const Api *a;
+    if (!handle) return;
+    a=get_api();
+    if(a) a->close(handle);
 }
-const char * CDECL pcap_lib_version(void) {
-    typedef const char *(CDECL *Fn)(void);
-    Fn fn=(Fn)lookup("pcap_lib_version");
-    return fn ? fn() : "Installed Npcap could not be loaded";
+const char * __cdecl pcap_lib_version(void) {
+    const Api *a=get_api();
+    return a ? a->lib_version() : "Installed Npcap could not be loaded";
 }
-void CDECL pcap_freealldevs(Device *head) {
-    typedef void (CDECL *Fn)(Device *);
-    Fn fn=(Fn)lookup("pcap_freealldevs");
-    if(fn) fn(head);
+void __cdecl pcap_freealldevs(Device *head) {
+    const Api *a;
+    if (!head) return;
+    a=get_api();
+    if(a) a->freealldevs(head);
 }
-BOOL WINAPI DllMain(HANDLE instance, DWORD reason, void *reserved) { return 1; }
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved) {
+    (void)instance; (void)reason; (void)reserved;
+    return TRUE;
+}
