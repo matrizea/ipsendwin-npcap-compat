@@ -1,0 +1,5 @@
+LIBRARY KERNEL32.dll
+EXPORTS
+GetSystemDirectoryW@8
+LoadLibraryW@4
+GetProcAddress@8

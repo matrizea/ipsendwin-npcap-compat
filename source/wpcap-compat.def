@@ -1,0 +1,8 @@
+LIBRARY wpcap
+EXPORTS
+pcap_close @8
+pcap_findalldevs @19
+pcap_open_live @40
+pcap_sendpacket @49
+pcap_lib_version
+pcap_freealldevs
