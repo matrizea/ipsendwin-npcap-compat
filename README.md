@@ -2,7 +2,7 @@
 
 Windows 11でipsendwin 2.4が「送信可能なインタフェースがありません。」で停止する場合に試す、32ビットのアプリ専用互換DLLです。
 
-解説記事：[ぬるま湯ハードウェア — Wireshark・ipsendwinの起動エラーとWindows 11での検証](https://yuyuyuroom.site/2024/11/04/wireshark-と-ipsendwin-の共存方法/)
+解説記事：[ぬるま湯ハードウェア — Windows 11でipsendwinを動かす](https://yuyuyuroom.site/2026/11/04/ipsendwin-windows11-npcap/)
 
 配布：[GitHub Releases](https://github.com/matrizea/ipsendwin-npcap-compat/releases)
 
@@ -51,7 +51,8 @@ ipsendwinを終了して、EXEの隣に追加した自作 `wpcap.dll` だけを�
 32ビットPEを生成できるMinGW GCC/binutilsを用意し、リポジトリのルートで実行します。
 
 ```powershell
-.\source\build.ps1 -ToolchainBin 'C:\path\to\mingw\bin'
+$toolchainBin = Read-Host 'GCCとdlltoolがあるbinフォルダー'
+.\source\build.ps1 -ToolchainBin $toolchainBin
 ```
 
 ルートへ `wpcap.dll` を出力します。DLLを使用中のipsendwinは先に終了してください。ソースに外部ダウンロード・ソフトの自動導入処理はありません。
